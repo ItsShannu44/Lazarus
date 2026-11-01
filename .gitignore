@@ -1,0 +1,15 @@
+# secrets
+.env
+.env.local
+.env.*
+!.env.example
+# python
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+# node
+node_modules/
+.next/
+next-env.d.ts
+.lazarus_watch.json

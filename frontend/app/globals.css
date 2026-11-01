@@ -1,0 +1,98 @@
+@import "tailwindcss";
+@import "@fontsource-variable/archivo/wdth.css";
+@import "@fontsource-variable/jetbrains-mono/index.css";
+
+/*
+  Lazarus: black and orange, after the Agentathon poster.
+  Orange is the brand and means "agents at work". Red = needs a human.
+  Green is used sparingly, only for "fixed / tests pass".
+*/
+@theme {
+  --color-glass: #0b0b0c;
+  --color-panel: #141414;
+  --color-panel-2: #1d1c1b;
+  --color-line: #272523;
+  --color-line-strong: #3a3633;
+  --color-bone: #f5f1ea;
+  --color-soft: #cfc9c1;
+  --color-muted: #948d85;
+  --color-faint: #75706a;
+  --color-dead: #ff4a3d;
+  --color-work: #ff6a1a;
+  --color-alive: #4ade80;
+
+  --font-sans: "Archivo Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "Cascadia Code", Consolas, monospace;
+
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+html, body {
+  background: var(--color-glass);
+  color: var(--color-bone);
+  overflow-x: hidden;
+  font-feature-settings: "ss01", "tnum";
+}
+
+body {
+  font-family: var(--font-sans);
+  font-stretch: 100%;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* condensed numerals for vital-sign readouts */
+/* code must show exactly what was typed: no ligatures (>= stays >=) */
+pre, code, .font-mono {
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+}
+
+@utility readout {
+  font-stretch: 72%;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+@utility wide {
+  font-stretch: 118%;
+}
+
+@utility wrap-anywhere {
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+/* subtle cardiac-monitor grid, only used behind the trace */
+@utility monitor-grid {
+  background-image:
+    linear-gradient(to right, rgb(255 106 26 / 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(255 106 26 / 0.06) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-work);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+::selection { background: rgb(255 106 26 / 0.3); }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: var(--color-line); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-line-strong); }
+::-webkit-scrollbar-track { background: transparent; }
+
+@keyframes breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.breathe { animation: breathe 2.4s ease-in-out infinite; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin 1.1s linear infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .breathe, .spin { animation: none; }
+  * { scroll-behavior: auto !important; }
+}
