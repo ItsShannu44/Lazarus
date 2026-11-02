@@ -1,227 +1,209 @@
-# Lazarus 🧟 — raises failed CI builds from the dead
+<div align="center">
 
-When a GitHub Actions build fails, Lazarus reads the logs, finds the root cause, writes a fix,
-pushes it to a `lazarus/*` branch so GitHub Actions re-runs the tests, retries up to 2 times on
-red, and opens a PR. **Nothing merges until a human approves.**
+# Lazarus
 
+**Brings failed CI builds back to life.**
+
+An agentic system that watches GitHub Actions. When CI goes red, it reads the logs, finds the broken code, writes a fix, tests it in CI and opens a pull request for a human to approve.
+
+![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-backend-009688?logo=fastapi&logoColor=white)
+![Next.js](https://img.shields.io/badge/Next.js-15-000000?logo=nextdotjs&logoColor=white)
+![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-verified-2088FF?logo=githubactions&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-83_passing-4ade80)
+
+*Built in 24 hours at **Agentathon** (31 Oct – 1 Nov 2026), organised by **Encode.ai**, by team **FluxWave**.*
+
+![Lazarus dashboard: a failed build fixed, verified in CI and waiting for approval](docs/dashboard.png)
+
+</div>
+
+---
+
+## Why
+
+A red build blocks a whole team. Someone has to open the logs, scroll past runner noise, find the one line that matters, track it to the file, fix it, push and wait for CI again. Most of these failures are small: an off-by-one, a typo in an import, a bad dependency pin. Each one still costs a developer half an hour or more.
+
+Lazarus does that loop for you. It is a team of agents rather than one prompt. Every fix it proposes has already passed **your own CI**, and nothing is merged until a human approves it.
+
+## How it works
+
+```mermaid
+flowchart LR
+    CI[GitHub Actions<br/>build fails] -->|webhook or watch mode| O[Orchestrator]
+    O --> LA[Log Analyst<br/>reads CI logs]
+    LA --> CL[Code Locator<br/>opens the right files]
+    CL --> FX[Fixer<br/>writes a patch]
+    FX --> V[Verifier<br/>pushes lazarus/* branch,<br/>waits for CI]
+    V -->|still red, up to 2 retries| FX
+    V -->|green| PR[PR Agent<br/>opens pull request]
+    PR --> H{Human}
+    H -->|approve| M[Merged]
+    H -->|reject| C[PR closed]
 ```
-CI fails ─▶ webhook or watch mode ─▶ Orchestrator
-                        ├─ Log Analyst   (GitHub jobs + logs API, Gemini)
-                        ├─ Code Locator  (git tree + contents API, Gemini)
-                        ├─ Fixer         (Gemini → JSON search/replace patch)
-                        ├─ Verifier      (1 commit via git data API → branch → wait for Actions)
-                        │     └─ red? errors go back to the Fixer (max 2 retries) → else escalate
-                        ├─ PR Agent      (pulls API, includes tests X/Y) ─▶ Human: approve (merge) / reject
-                        └─ escalation    ─▶ GitHub issue with CI logs, attempts and agent notes
-Every step → MongoDB (optional) + live SSE feed for the dashboard
-```
 
-## Layout
-```
-backend/app/
-  main.py          FastAPI: webhook, runs API, approve/reject, SSE
-  orchestrator.py  pipeline, retry loop, escalation, human actions
-  agents.py        the 5 agents + prompts + JSON schemas
-  github_client.py GitHub REST calls
-  llm.py           Gemini (structured output) + OpenAI-compatible fallback
-  store.py         runs in RAM (+ Mongo write-through), event bus
-  textutil.py      log cleaning, patch apply, diff
-  cli.py           run once from the terminal, no server needed
-  check.py         pre-flight: tests GitHub token, Gemini, Groq
-  demo.py          Break/Reset buttons for the stage demo
-backend/tests/     offline end-to-end tests (fake GitHub + fake LLM)
-dashboard/         Next.js + Tailwind UI (see dashboard/README.md)
-demo-app/          the repo you push to GitHub and break on stage
-scripts/break_demo.py   test | dep | lint | reset
-```
+| Agent | What it does |
+|---|---|
+| **Log Analyst** | Pulls the failed job logs, strips runner noise and secrets, and classifies the failure (test, dependency, lint, type, build, config or infra). |
+| **Code Locator** | Reads the repository tree and opens only the files that matter. Large files are windowed around the lines named in the error. |
+| **Fixer** | Produces a minimal search-and-replace patch with its reasoning and a confidence score. |
+| **Verifier** | Commits the patch to a `lazarus/*` branch and waits for GitHub Actions. If CI is still red, the new errors go back to the Fixer. |
+| **PR Agent** | Opens a pull request with the diff, the reasoning, the test results and a link to the original failure. |
 
-## Setup (≈15 min)
+A live dashboard follows every step over Server-Sent Events: the agent timeline, the diff, confidence, test counts and a heartbeat monitor that goes from flatline to pulse.
 
-1. **Demo repo.** Create an empty GitHub repo (e.g. `demo-app`), then:
-   ```bash
-   cd demo-app && git init && git add -A && git commit -m init
-   git branch -M main && git remote add origin git@github.com:<you>/demo-app.git && git push -u origin main
-   ```
-   Check the first CI run is green. The workflow runs on `push` to every branch, which Lazarus needs.
+## Features
 
-2. **Token.** Fine-grained PAT scoped to the demo repo: *Actions: read, Contents: read/write,
-   Pull requests: read/write, Issues: read/write* (Issues is for escalations; optional).
-   Lazarus never edits workflow files, so no Workflows permission.
+- **Automatic wake-up.** Pick repositories on the dashboard. Every new CI failure in them starts a fix, through a webhook or by polling.
+- **Verified fixes only.** A PR opens only after the fix passes the repository's own GitHub Actions. Nothing runs on the Lazarus server.
+- **Human in the loop.** Every merge needs an explicit Approve. Reject closes the PR and deletes the branch.
+- **Self-healing.** Recoverable problems pause the run instead of failing it: LLM rate limits, a token that can't push yet, CI that only runs on pull requests, GitHub outages. Lazarus resumes on its own.
+- **Honest fixes.** Patches that skip or delete tests, remove assertions, silence linters (`noqa`, `type: ignore`), edit CI workflows or exceed 200 lines are rejected.
+- **Infra-aware.** Flaky tests and runner outages are re-run, not "fixed" in code.
+- **No loops.** Failures on its own branches are treated as test results. Old failures that a newer commit already fixed are skipped, and duplicate PRs are never opened.
+- **CI bootstrap.** For repositories without CI, Lazarus detects Python or JavaScript and opens a PR that adds a suitable workflow.
+- **Escalation.** When a human is really needed, Lazarus opens a GitHub issue with the logs, every attempt and the agents' notes (secrets redacted).
+- **Resilient LLM layer.** Gemini with structured output, plus an OpenAI-compatible fallback (Groq). It waits as long as the provider asks, rotates models and trims prompts to fit free-tier limits.
 
-3. **Backend.**
-   ```bash
-   cd backend
-   python -m venv .venv && source .venv/bin/activate
-   pip install -r requirements-dev.txt
-   cp .env.example .env      # fill GITHUB_TOKEN, GEMINI_API_KEY, ALLOWED_REPOS
-   pytest -q                 # 76 offline tests, no keys needed
-   uvicorn app.main:app --reload --port 8000
-   ```
+## Tech stack
 
-4. **Waking up.** With `ALLOWED_REPOS` set, **watch mode** checks those repos every
-   `WATCH_POLL_S` seconds (default 20), so Lazarus starts by itself with no webhook.
-   It also notices PRs you merge or close directly on GitHub.
+| Layer | Technology |
+|---|---|
+| Backend | Python, FastAPI, httpx (async GitHub REST), Pydantic, Server-Sent Events |
+| LLMs | Google Gemini (JSON schema output), Groq / any OpenAI-compatible API as fallback |
+| Storage | In memory, with optional MongoDB write-through for history and past-fix memory |
+| Dashboard | Next.js 15, React 19, Tailwind CSS v4, Motion |
+| Verification | GitHub Actions on the target repository |
+| Tests | pytest with an in-memory fake GitHub and fake LLM, so the full pipeline runs offline |
 
-   **Webhook (optional, instant).** For local dev use smee.io (no account needed):
-   ```bash
-   npx smee-client --url https://smee.io/<your-channel> --target http://localhost:8000/webhook/github
-   ```
-   Repo → Settings → Webhooks → Payload URL = the smee URL (or `https://<render-app>/webhook/github`),
-   content type `application/json`, secret = `GITHUB_WEBHOOK_SECRET`,
-   events: **Workflow runs** only.
+## Getting started
 
-## Choosing repositories
+### Prerequisites
 
-Open **Repositories** on the dashboard. It lists every repository your GitHub token can reach;
-switch **Watch** on for the ones Lazarus should look after. From then on, every failed CI run in a
-watched repo wakes Lazarus up automatically (watch mode checks every `WATCH_POLL_S` seconds, or
-instantly with a webhook). Only failures *after* you switch a repo on are fixed, never old history.
+- Python 3.11+ and Node.js 20+
+- A GitHub repository with a GitHub Actions workflow that runs on `push` to every branch (or on `pull_request`)
+- A Gemini API key, a Groq API key, or both
 
-- The choice is saved in `backend/.lazarus_watch.json`, so it survives restarts.
-- `ALLOWED_REPOS` in `.env` only seeds the list the first time.
-- Read-only repos are shown but can't be switched on (Lazarus needs to push a fix branch).
-- Fine-grained tokens only see the repositories selected on the token: to add more, edit the token
-  on GitHub (or pick "All repositories"), then press **Refresh** in the panel.
+### 1. Create a GitHub token
 
-### Repos without CI
-Lazarus wakes up when **GitHub Actions goes red**. A repo with no workflow (or one that never checks
-the code) stays green however broken it is, so Lazarus never sees the bug. The dashboard warns
-*"No CI in this repo"* and offers **Set up CI**: Lazarus looks at the files and opens a PR adding
-`.github/workflows/lazarus-ci.yml`:
+Create a **fine-grained personal access token** from the account that **owns** the repositories. Under *Repository access*, select every repository Lazarus should fix, then set these repository permissions:
 
-- **Python:** installs requirements, `ruff --select E9,F63,F7,F82` (syntax errors, undefined names; never style),
-  `compileall`, and `pytest` if the repo has tests.
-- **JavaScript:** `node --check` on every file (ES modules checked as modules), `npm test` if defined.
+| Permission | Access | Used for |
+|---|---|---|
+| Contents | Read and write | Pushing the fix branch |
+| Pull requests | Read and write | Opening and merging PRs |
+| Actions | Read and write | Reading logs, re-running flaky jobs |
+| Issues | Read and write | Escalation issues (optional) |
+| Workflows | Read and write | The *Set up CI* button (optional) |
 
-Merge the PR, then push a change. Needs the token permission **Workflows: Read and write**.
-Without it, Lazarus opens GitHub's editor with the workflow already filled in: press *Commit changes*
-(this uses your own GitHub login, so the token's permissions don't matter).
+> Public repositories are readable by any token, but Lazarus can only **push** to repositories selected on the token. Run `python -m app.check <owner>/<repo>` to confirm.
 
-## Run everything
+### 2. Run the backend
 
-```powershell
-# Terminal 1 – backend
+```bash
 cd backend
-python -m app.check <you>/demo-app     # all ✔ ?
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements-dev.txt
+cp .env.example .env               # add GITHUB_TOKEN and an LLM key
+python -m app.check <owner>/<repo> # checks token, push access and LLMs
 uvicorn app.main:app --port 8000
+```
 
-# Terminal 2 – dashboard
+### 3. Run the dashboard
+
+```bash
 cd dashboard
 npm install
-copy .env.local.example .env.local      # macOS/Linux: cp
-npm run dev                             # http://localhost:3000
+cp .env.local.example .env.local   # NEXT_PUBLIC_API_URL=http://localhost:8000
+npm run dev
 ```
+
+Open http://localhost:3000, click **Repositories** and switch on **Watch** for the repositories you want Lazarus to look after. From then on, every new CI failure in them is picked up automatically.
+
+### 4. (Optional) Instant webhooks
+
+Watch mode polls every 20 seconds and needs no public URL. For instant wake-up, add a webhook under **Settings → Webhooks** that sends **Workflow runs** events to `https://<your-host>/webhook/github`, using the secret from `GITHUB_WEBHOOK_SECRET`. For local development, [smee.io](https://smee.io) can forward events to your machine.
 
 ## Try it
 
-```bash
-# break the demo (commits + pushes → CI fails → webhook → Lazarus wakes up)
-python scripts/break_demo.py test  --repo <you>/demo-app   # or dep / lint (edits GitHub directly)
-python scripts/break_demo.py reset --repo <you>/demo-app   # green again
+`demo-app/` is a small Python project with tests and CI. Push it to a new repository, add the repository to your token and switch it on in the dashboard. Then use the **Stage demo** buttons, or `scripts/break_demo.py`, to push a failing test, a bad dependency pin or a lint error, and watch Lazarus fix it.
 
-# no webhook? run it by hand on the latest failed run:
-cd backend && python -m app.cli <you>/demo-app            # prints the agent timeline
-curl -X POST localhost:8000/api/runs/trigger -H 'content-type: application/json' -d '{"repo":"<you>/demo-app"}'
+## Configuration
+
+All settings live in `backend/.env`. The defaults are tuned for free-tier LLMs; see [`backend/.env.example`](backend/.env.example) for the full list.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `GITHUB_TOKEN` | | Fine-grained token (see above) |
+| `GEMINI_API_KEY` / `FALLBACK_API_KEY` | | At least one LLM key |
+| `FALLBACK_BASE_URL` / `FALLBACK_MODEL` | Groq, `openai/gpt-oss-120b` | Any OpenAI-compatible endpoint |
+| `MONGODB_URI` | empty | Optional persistence |
+| `WATCH_POLL_S` | `20` | Polling interval; `0` turns watch mode off |
+| `MAX_RETRIES` | `2` | Fix attempts per run when CI stays red |
+| `MIN_CONFIDENCE` | `50` | Confidence below which a patch is flagged |
+| `AUTO_HEAL` / `AUTO_RETRIES` / `HEAL_DELAY_S` | `true` / `3` / `60` | Self-healing behaviour |
+| `MAX_CONCURRENT` | `1` | Fixes running at once; extra failures queue |
+| `ESCALATE_ISSUE` | `true` | Open a GitHub issue when a human is needed |
+
+## Project structure
+
+```
+backend/
+  app/
+    main.py           FastAPI app: webhook, REST API, SSE stream
+    orchestrator.py   pipeline, retries, self-healing, watch mode
+    agents.py         Log Analyst, Code Locator, Fixer, Verifier, PR Agent
+    llm.py            Gemini + OpenAI-compatible fallback, rate-limit handling
+    github_client.py  GitHub REST client
+    ci_setup.py       detects the stack and proposes a CI workflow
+    textutil.py       log cleaning, secret redaction, patch application, cheat guard
+    store.py          run store, event bus, optional MongoDB
+    check.py          pre-flight diagnostics
+    cli.py            run a single fix from the terminal
+  tests/              offline end-to-end tests (fake GitHub + fake LLM)
+dashboard/            Next.js dashboard
+demo-app/             sample repository to break and fix
+scripts/              demo helpers
+docs/                 screenshots
 ```
 
-## API (for the dashboard)
+## API
 
-| Method | Path | What |
+| Method | Path | Description |
 |---|---|---|
-| POST | `/webhook/github` | GitHub `workflow_run` events (HMAC-verified) |
-| POST | `/api/runs/trigger` | `{repo, run_id?, branch?}` start manually |
-| GET | `/api/runs` | run list (no steps) |
-| GET | `/api/runs/{id}` | full run: steps, attempts, diff, PR |
-| POST | `/api/runs/{id}/approve` | merge the PR |
-| POST | `/api/runs/{id}/reject` | `{reason?}` close PR + delete branch |
-| GET | `/api/stats` | totals + minutes saved |
-| GET | `/api/config` | watched repos, watch status, demo buttons |
-| GET | `/api/repos` | repositories the token can reach, with `watched` / `can_push` |
-| POST | `/api/repos/watch` | `{repo, watch}` switch automatic fixing on or off |
-| GET | `/api/repos/ci?repo=` | does the repo have GitHub Actions workflows |
-| POST | `/api/repos/ci/setup` | `{repo}` open a PR that adds a suitable CI workflow |
-| POST | `/api/demo/break` | `{bug: test\|dep\|lint, repo?}` push a bug to the demo repo |
-| POST | `/api/demo/reset` | `{repo?}` make the demo repo green again |
-| GET | `/api/stream` | SSE: every step of every run |
-| GET | `/api/runs/{id}/stream` | SSE for one run |
-
-SSE messages are JSON: first `{"type":"snapshot",...}`, then
-`{"type":"step","run":{...},"step":{agent,status,message,data,ts}}` and `{"type":"run","run":{...}}`.
-`step.data` carries `diff`, `reasoning`, `pr_url`, `ci_url`, `branch` where relevant.
-
-Run statuses: `queued → analyzing → locating → fixing → verifying → opening_pr → awaiting_approval → merged | rejected`,
-or `needs_human` / `error` with `escalation_reason`.
-
-## Slide checklist
-
-| Slide promise | Where |
-|---|---|
-| Wakes up when CI fails | webhook + watch mode (`orchestrator.watch_forever`) |
-| Log Analyst / Code Locator / Fixer (JSON patch) / Verifier / PR Agent | `agents.py` |
-| Up to 2 retries, errors go back to the Fixer | `orchestrator._pipeline` |
-| Low confidence or still failing → flag a human with logs and notes | escalation + GitHub issue |
-| Nothing merges until a human approves | Approve button → merge API; GitHub merges synced |
-| Wireframe: failed runs, timeline, diff, confidence, Tests X/Y, approve/reject, time saved | dashboard |
-| MongoDB memory: every run saved, past fixes reused | `store.py` (`MONGODB_URI`) |
-| Gemini + Groq/OpenRouter backup | `llm.py` with model auto-discovery |
-| Live demo with 3 bugs | Stage demo bar on the dashboard |
-
-## Self-healing (Lazarus finishes the job by itself)
-
-A problem that will go away pauses the run as **Will retry** (orange) instead of flagging a human:
-
-| Problem | What Lazarus does |
-|---|---|
-| Token can read the repo but not push (public repo not on the token) | Keeps the fix, re-checks write access every `HEAL_DELAY_S`, continues the moment you add the repo to the token |
-| LLM rate limit / provider outage | Retries after 60s, 120s, 240s |
-| CI on the fix branch stays red after all attempts, or the patch didn't apply | Starts fresh (new attempts), up to `AUTO_RETRIES` |
-| CI only runs on `pull_request` (not on push to other branches) | Opens the PR early so its CI verifies the fix |
-| GitHub 5xx / network error / CI timeout | Retries |
-| Low confidence | Pushes anyway; CI is the judge and a human still approves the merge |
-
-Only truly unrecoverable cases reach **Needs a human**: binary files, attempts to cheat (skipping or deleting tests), a broken workflow file, flaky infra twice, or retries used up. Every stopped run has a **Retry now** button. The dashboard warns when the token can't push to the selected repo.
-
-## Edge cases (each has a test in `backend/tests/test_edge_cases.py`)
-
-| Situation | What Lazarus does |
-|---|---|
-| Fix still fails CI | New errors go back to the Fixer, max 2 retries, then a human is flagged (issue with logs) |
-| Fixer isn't sure | Below `MIN_CONFIDENCE` the patch is shown but never pushed |
-| Patch doesn't match the code | Fixer rewrites it without spending a CI run |
-| Fixer tries to cheat (`noqa`, `type: ignore`, skip/xfail, deleting tests or asserts, `|| true`) | Patch rejected, Fixer told to fix the real cause |
-| Edits to `.github/` workflows | Blocked |
-| Patch too big (>200 lines) | Rejected, then a human is flagged |
-| Big source file (up to 400 KB) | Only ~120 lines around the error line from the log go to the LLM; the edit still applies to the whole file |
-| Workflow exists but Actions is off | Dashboard says so and links to the repo's Actions settings |
-| Binary / non-UTF-8 file | Never rewritten |
-| Secrets in CI logs | Redacted before reaching the LLM, PRs or issues |
-| Prompt injection in logs/code | Logs are treated as data; the agent can only propose edits, never merge |
-| Flaky test / network / runner outage | Classified as `infra`: re-runs CI once instead of changing code; fails again → human |
-| Workflow file itself invalid (no jobs ran) | Human flagged immediately, no LLM spend |
-| Someone pushes a fix meanwhile | If the newer commit is green, Lazarus stands down (`superseded`); otherwise notes the PR may need a rebase |
-| Branch deleted mid-run | Stands down |
-| Failure on Lazarus's own `lazarus/*` branch | Treated as a test result, never a new incident (no loops) |
-| Same failure delivered twice | Deduplicated; a CI *re-run* that fails again is a new incident |
-| Old failure that is already fixed (newer run on that branch passed) | Never re-fixed, by watch mode, webhook or the Run button; stands down before any LLM call |
-| Lazarus PR for this failure already open (e.g. after a restart) | Stands down instead of opening a duplicate |
-| Two workflows fail on one commit | Fixed once |
-| Many failures at once | At most `MAX_CONCURRENT` pipelines; the rest queue |
-| Server restarts mid-run | Interrupted runs are marked `error` on startup (with MongoDB) |
-| Merge conflict / branch protection on Approve | Clear message + link to resolve on GitHub; run stays approvable |
-| Token expired / missing permission | Plain-English hint naming the missing permission |
-| Token can read a public repo but not write it | Tries a second write API; if both refuse, says the repo must be added to the token's Repository access (fix stays visible) |
-| Gemini overloaded or model retired | Retries, auto-switches model, falls back to Groq |
-| Free-tier rate limit (429, tokens per minute) | Waits exactly as long as the provider says, rotates to another Groq model with its own limit, trims prompts; only flags a human after `LLM_PATIENCE_S` |
-| CI doesn't run on fix branches | Escalates with the exact trigger to add |
-| PR merged/closed on GitHub directly | Dashboard syncs it |
+| `POST` | `/webhook/github` | GitHub `workflow_run` webhook (HMAC-verified) |
+| `POST` | `/api/runs/trigger` | Fix the latest failure in a repository |
+| `GET` | `/api/runs`, `/api/runs/{id}` | List runs / run detail with steps and attempts |
+| `POST` | `/api/runs/{id}/approve` | Merge the PR |
+| `POST` | `/api/runs/{id}/reject` | Close the PR and delete the branch |
+| `POST` | `/api/runs/{id}/retry` | Retry a stopped run |
+| `GET` | `/api/stream` | Live events (Server-Sent Events) |
+| `GET` / `POST` | `/api/repos`, `/api/repos/watch` | Repositories the token can reach; watch on/off |
+| `GET` / `POST` | `/api/repos/ci`, `/api/repos/ci/setup` | CI status and push access; propose a workflow |
+| `GET` | `/api/stats`, `/health` | Totals and health check |
 
 ## Safety
-- Human approval required for every merge
-- Fixes run only inside GitHub Actions; nothing executes on our server
-- Patches can't touch `.github/`, can't exceed 200 changed lines, must match the file exactly
-- Confidence below `MIN_CONFIDENCE` → patch shown, never pushed
-- Failures on `lazarus/*` branches are verifier results, never new incidents (no infinite loops)
 
-## Deploy
-`render.yaml` deploys `backend/` on Render (set the env vars in the dashboard). Free instances
-sleep: hit `/health` a minute before judging.
+- Lazarus **never merges on its own**. Every merge is an explicit human approval.
+- Proposed code runs only inside the target repository's GitHub Actions, never on the Lazarus server.
+- Secrets are redacted from logs before they reach the LLM, pull requests or issues.
+- CI logs and code are treated as data. The agents can only propose edits through a fixed schema.
+- Edits to `.github/`, binary files and oversized patches are refused.
+
+## Testing
+
+```bash
+cd backend
+pytest -q
+```
+
+83 tests cover the full pipeline end to end against an in-memory GitHub and LLM. They include retries, escalation, self-healing, rate limits, loop prevention, multi-repo watch mode, CI setup, large files and the safety guards. No keys or network access are needed.
+
+## Deployment
+
+`render.yaml` deploys the backend to [Render](https://render.com). Set the environment variables there and point the dashboard's `NEXT_PUBLIC_API_URL` at it. The dashboard deploys to any Next.js host, such as Vercel.
+
+## Origin
+
+Lazarus was designed and built from scratch during **Agentathon**, a 24-hour hackathon organised by **Encode.ai** (31 October – 1 November 2026), by team **FluxWave** ([ItsShannu44](https://github.com/ItsShannu44)). The commit history of this repository records its development.
